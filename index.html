@@ -14,7 +14,7 @@
 <body>
 <div id="load">Carregando mapa...</div>
 <div id="info">WASD: andar · Shift: correr · Espaço: pular<br>Arrastar mouse: girar câmera · Scroll: zoom · - / = : tamanho (<span id="sz"></span>)<br>
-<span style="opacity:.7">Mapa: 3D KING FF · Personagem: FFCN (CC-BY-4.0, Sketchfab)</span></div>
+<span style="opacity:.7">Mapa: 3D KING FF · Personagem: Soldier (Mixamo, via three.js examples)</span></div>
 <script type="importmap">
 {"imports":{"three":"./lib/three/three.module.js"}}
 </script>
@@ -38,7 +38,7 @@ const loader = new GLTFLoader();
 const load = u => new Promise((res,rej)=>loader.load(u,res,undefined,rej));
 const [mapGltf, charGltf] = await Promise.all([
   load('./free_fire_old_training_ground_3d_model/free_fire_old_training_ground_3d_model.gltf'),
-  load('./personagem/bunny.glb')
+  load('./personagem/soldier.glb')
 ]);
 
 const map = mapGltf.scene;
@@ -54,13 +54,28 @@ model.updateMatrixWorld(true);
 const cb = new THREE.Box3().setFromObject(model);
 const cs = cb.getSize(new THREE.Vector3());
 let charH = 0.4;                           // altura do personagem no mapa (teclas - e = ajustam)
+let modelScale = 1;                        // escala do modelo esquelético (para sincronia de passos)
 function applyScale(){
   const k = charH / cs.y;
+  modelScale = k;
   model.scale.setScalar(k);
   model.position.set(-(cb.min.x+cb.max.x)/2*k, -cb.min.y*k, -(cb.min.z+cb.max.z)/2*k);
   const el = document.getElementById('sz'); if(el) el.textContent = charH.toFixed(2);
 }
 applyScale();
+
+// ---------- animações esqueléticas (Soldier: Idle/Run/Walk) ----------
+const mixer = new THREE.AnimationMixer(model);
+const clips = {};
+for(const c of charGltf.animations) clips[c.name] = mixer.clipAction(c);
+let curA=null, curName='';
+function fadeClip(next,name,t=0.22){
+  const prev = curA; curA = next; curName = name;
+  next.reset(); next.setEffectiveWeight(1);
+  if(prev) next.crossFadeFrom(prev,t,false);
+  next.play();
+}
+if(clips.Idle) fadeClip(clips.Idle,'Idle');
 
 // ---------- colisão ----------
 const ray = new THREE.Raycaster();
@@ -203,18 +218,28 @@ function tick(){
     const d=((target-facing+Math.PI)%(2*Math.PI)+2*Math.PI)%(2*Math.PI)-Math.PI;
     facing += d*(1-Math.exp(-14*dt)); yawRate = damp(yawRate,d*14,10,dt);
   } else yawRate = damp(yawRate,0,10,dt);
-  if(grounded) phase += dt*sp/H*3.6;
-  ampBob = damp(ampBob, grounded?spF:0, 10, dt);
   lean = damp(lean, grounded ? spF*0.24 : Math.max(-0.25,Math.min(0.25,-vy/(14*H)))*0.8 + spF*0.12, 9, dt);
   roll = damp(roll, -Math.max(-1,Math.min(1,yawRate*0.12))*0.3*spF, 9, dt);
   sqV += (-220*sq - 17*sqV)*dt; sq += sqV*dt;
   stepOff = damp(stepOff,0,16,dt);
-  const breathe = (1-ampBob)*Math.sin(tAnim*2.2)*0.012;
+  const breathe = Math.sin(tAnim*2.2)*0.012;
+  // esqueleto: Idle/Walk/Run com crossfade congelado durante o ar
+  if(curA){
+    mixer.timeScale = grounded?1:0;
+    if(grounded){
+      const stride = curName==='Walk'?1.6 : curName==='Run'?5.0 : 0;  // velocidade nativa dos clips (m/s)
+      if(stride) curA.timeScale = (sp/modelScale)/stride;
+      const walkMin = curName==='Idle' ? 0.35*H : 0.18*H;            // histerese
+      const target = sp>walkMin ? (run?'Run':'Walk') : 'Idle';
+      if(clips[target] && target!==curName) fadeClip(clips[target],target);
+    }
+    mixer.update(dt);
+  }
   char.position.copy(pos); char.rotation.y = facing;
-  vis.position.y = -stepOff + Math.abs(Math.sin(phase))*0.07*H*ampBob;
-  vis.rotation.x = lean + Math.sin(phase*2)*0.025*ampBob;
-  vis.rotation.z = roll + Math.sin(phase)*0.06*ampBob;
-  vis.scale.set(1-sq*0.5+breathe*-0.5, 1+sq+breathe, 1-sq*0.5-breathe*0.5);
+  vis.position.y = -stepOff;
+  vis.rotation.x = lean;
+  vis.rotation.z = roll;
+  vis.scale.set(1-sq*0.5-breathe*0.5, 1+sq-breathe, 1-sq*0.5-breathe*0.5);
 
   // câmera suave
   camT.x=damp(camT.x,pos.x,16,dt); camT.z=damp(camT.z,pos.z,16,dt); camT.y=damp(camT.y,pos.y,9,dt);
