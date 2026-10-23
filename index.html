@@ -103,35 +103,27 @@ model.traverse(o=>{
   }
 }
 
-// ---------- UMP: presa ao osso da mão direita (mesmo padrão das orelhas) ----------
+// ---------- UMP: segurada com as duas mãos (IK nos braços; arma ancorada no peito) ----------
+const GUN_LEN = 0.45;                           // comprimento da arma no mundo = GUN_LEN*charH
 const ump = umpGltf.scene;
 const gunBox = new THREE.Box3().setFromObject(ump);
-const gunHand = model.getObjectByName('mixamorig:RightHand') || model.getObjectByName('mixamorigRightHand');
-const gunRoot = new THREE.Group();              // grupo de montagem na mão
+const gunSizeX = gunBox.max.x - gunBox.min.x;
+const gunGR = new THREE.Vector3(0,-0.15,0.17);  // palma da mão direita na empunhadura (espaço da arma: +X cano, +Y cima, +Z direita)
+const gunGL = new THREE.Vector3(1.2,0.25,0);    // palma da mão esquerda sob o guarda-mão
+const gunRoot = new THREE.Group();              // pivô = empunhadura (mão direita), posicionado no mundo a cada quadro
 const gunMuzzle = new THREE.Object3D();         // ponta do cano (+X = mira)
-gunMuzzle.position.set(gunBox.max.x+0.03, (gunBox.min.y+gunBox.max.y)/2, (gunBox.min.z+gunBox.max.z)/2);
+gunMuzzle.position.set(gunBox.max.x+0.03, 0.57, 0);
 ump.add(gunMuzzle);
-// rotação: cano (+X da arma) -> dedos (+Y do osso); "para cima" da arma -> Z do osso
-ump.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(
-  new THREE.Vector3(0,1,0), new THREE.Vector3(0,0,1), new THREE.Vector3(1,0,0)));
-const gunGrip = new THREE.Object3D();           // zona da empunhadura (no espaço local da UMP)
-gunGrip.position.set(0.55,-0.5,0);
-ump.add(gunGrip);
-gunRoot.add(ump);
-const gunLight = new THREE.PointLight(0xffd9a0,0,1); gunRoot.add(gunLight);
-const _bw = new THREE.Box3(), _gs = new THREE.Vector3(), _gw = new THREE.Vector3(), _hi = new THREE.Matrix4();
-function gunFit(){                              // escala/ancoragem numéricas (independente do frame do osso)
-  if(!gunLoaded) return;
-  gunRoot.position.set(0,0,0); gunRoot.scale.setScalar(1);
-  vis.updateMatrixWorld(true);                  // pose real do esqueleto
-  _bw.setFromObject(gunRoot); _bw.getSize(_gs);
-  gunRoot.scale.setScalar(0.55*charH/_gs.x);    // comprimento no mundo = 0,55*charH
-  vis.updateMatrixWorld(true);
-  gunGrip.getWorldPosition(_gw);                // leva o grip até a origem do osso da mão
-  _hi.copy(gunHand.matrixWorld).invert();
-  gunRoot.position.copy(_gw).applyMatrix4(_hi).negate();
-}
-if(gunHand){ gunHand.add(gunRoot); gunLoaded = true; gunFit(); }
+ump.position.copy(gunGR).negate();
+gunRoot.add(ump); scene.add(gunRoot);
+const gunLight = new THREE.PointLight(0xffd9a0,0,1); gunMuzzle.add(gunLight);
+const BN = n => model.getObjectByName('mixamorig'+n) || model.getObjectByName('mixamorig:'+n);
+const mkArm = S => ({ up:BN(S+'Arm'), fo:BN(S+'ForeArm'), hd:BN(S+'Hand'), mid:BN(S+'HandMiddle1'), th:BN(S+'HandThumb1'), pk:BN(S+'HandPinky1'),
+  fing:['Index','Middle','Ring','Pinky','Thumb'].map(f=>[1,2,3].map(i=>BN(S+'Hand'+f+i))) });
+const armR = mkArm('Right'), armL = mkArm('Left'), chestB = BN('Spine2');
+function gunFit(){ if(gunLoaded) gunRoot.scale.setScalar(GUN_LEN*charH/gunSizeX); }
+gunLoaded = !!(chestB && [armR,armL].every(a=>a.up&&a.fo&&a.hd&&a.mid&&a.th&&a.pk));
+gunFit();
 
 // ---------- efeitos de tiro (sem transparência: flash/tracers/faíscas em mescla aditiva opaca, escala de anima) ----------
 const fxFlash = new THREE.Mesh(new THREE.OctahedronGeometry(1),new THREE.MeshBasicMaterial({color:0xffd070,blending:THREE.AdditiveBlending,depthWrite:false}));
@@ -235,7 +227,7 @@ const flyPos=new THREE.Vector3();                 // posição da câmera no mod
 const fF=new THREE.Vector3(), rF=new THREE.Vector3(); // frente/direita da câmera livre
 renderer.domElement.addEventListener('pointerdown',e=>{drag=true; if(e.button===0) firing=true; renderer.domElement.setPointerCapture(e.pointerId);});
 renderer.domElement.addEventListener('pointerup',()=>{drag=false; firing=false;});
-addEventListener('blur',()=>{drag=false; firing=false;});
+addEventListener('blur',()=>{drag=false; firing=false; for(const k in keys) keys[k]=false;});
 renderer.domElement.addEventListener('pointermove',e=>{ if(!drag)return;
   yaw -= e.movementX*0.005;
   const lim = fly ? 1.55 : 1.3, lo = fly ? -1.55 : -0.2;
@@ -251,26 +243,89 @@ const _ms=new THREE.Vector3(), _av=new THREE.Vector3();
 const IDQ = new THREE.Quaternion();
 let aimAmt = 0;                                          // mistura da pose de mira (0=repouso,1=mira)
 
-function gunAim(aim,dt){                                 // pose de mira: cano -> direção da câmera
+let recoil = 0, runAmt = 0, walkAmt = 0, bobPh = 0, gunYawLag = 0;
+const _P=new THREE.Vector3(), _S=new THREE.Vector3(), _fw=new THREE.Vector3(), _rt=new THREE.Vector3(), _pl=new THREE.Vector3();
+const _gx=new THREE.Vector3(), _gy=new THREE.Vector3(), _gz=new THREE.Vector3(), _a=new THREE.Vector3(), _b=new THREE.Vector3(), _c=new THREE.Vector3();
+const _fd=new THREE.Vector3(), _ld=new THREE.Vector3(), _bm=new THREE.Matrix4(), _bm2=new THREE.Matrix4();
+const _q1=new THREE.Quaternion(), _q2=new THREE.Quaternion(), _q3=new THREE.Quaternion();
+const CURL_AXIS = new THREE.Vector3(1,0,0);
+function setWorldQ(bone,wq){                             // aplica rotação em espaço de mundo no osso
+  bone.parent.getWorldQuaternion(_q3).invert(); bone.quaternion.copy(_q3.multiply(wq));
+  bone.updateMatrixWorld(true);
+}
+function pointBone(bone,child,target){                   // gira o osso para o filho apontar ao alvo
+  bone.getWorldPosition(_a); child.getWorldPosition(_b);
+  _b.sub(_a).normalize(); _c.copy(target).sub(_a).normalize();
+  _q1.setFromUnitVectors(_b,_c); bone.getWorldQuaternion(_q2).premultiply(_q1);
+  setWorldQ(bone,_q2);
+}
+function solveArm(A,target,pole){                        // IK de 2 ossos (ombro-cotovelo-pulso) com polo p/ o cotovelo
+  A.up.getWorldPosition(_a); A.fo.getWorldPosition(_b); A.hd.getWorldPosition(_c);
+  const l1=_b.distanceTo(_a), l2=_c.distanceTo(_b);
+  _fd.copy(target).sub(_a); let d=_fd.length(); _fd.divideScalar(d||1);
+  d=Math.min(Math.max(d,Math.abs(l1-l2)+1e-4),(l1+l2)*0.995);
+  const ax=(l1*l1-l2*l2+d*d)/(2*d), h=Math.sqrt(Math.max(l1*l1-ax*ax,0));
+  _ld.copy(pole).addScaledVector(_fd,-pole.dot(_fd)); if(_ld.lengthSq()<1e-8) _ld.set(0,-1,0); _ld.normalize();
+  const el=new THREE.Vector3().copy(_a).addScaledVector(_fd,ax).addScaledVector(_ld,h);
+  const wr=new THREE.Vector3().copy(_a).addScaledVector(_fd,d);
+  pointBone(A.up,A.fo,el); pointBone(A.fo,A.hd,wr);
+}
+function orientHand(A,fT,lT){                            // alinha dedos (f) e polegar (l) da mão aos vetores de mundo
+  A.hd.getWorldPosition(_a); A.mid.getWorldPosition(_b); A.th.getWorldPosition(_c); A.pk.getWorldPosition(_ld);
+  _fd.copy(_b).sub(_a).normalize(); _c.sub(_ld); _c.addScaledVector(_fd,-_c.dot(_fd)).normalize();
+  _bm.makeBasis(_fd,_c,_b.crossVectors(_fd,_c));
+  _pl.copy(lT).addScaledVector(fT,-lT.dot(fT)).normalize();
+  _bm2.makeBasis(fT,_pl,_b.crossVectors(fT,_pl));
+  _q1.setFromRotationMatrix(_bm2); _q2.setFromRotationMatrix(_bm).invert(); _q1.multiply(_q2);
+  A.hd.getWorldQuaternion(_q2).premultiply(_q1); setWorldQ(A.hd,_q2);
+}
+function curlHand(A,k){                                  // fecha os dedos em volta da arma
+  const ang=[[0.9,1.1,0.7],[1.0,1.2,0.8],[0.95,1.15,0.75],[0.9,1.1,0.7],[0.25,0.3,0.25]];
+  A.fing.forEach((f,i)=>f.forEach((b,j)=>{ if(b) b.quaternion.multiply(_q1.setFromAxisAngle(CURL_AXIS,ang[i][j]*k)); }));
+}
+function gunAim(aim,dt){                                 // posiciona a arma e as mãos (pronto / correndo / mira)
   if(!gunLoaded) return;
   vis.updateMatrixWorld(true);
-  if(aim){
-    aimAmt = damp(aimAmt,1,14,dt);
-    gunMuzzle.getWorldQuaternion(_mq);                   // onde o cano aponta no mundo agora
-    _ms.set(1,0,0).applyQuaternion(_mq).normalize();
-    _mq.setFromUnitVectors(_ms, aim);                    // desvio mundo: cano -> mira
-    gunHand.getWorldQuaternion(_ho);                     // converte p/ espaço do osso: H^-1 * Q * H
-    _Hq.copy(_ho).invert();
-    _tg.copy(gunRoot.quaternion);                        // L
-    _tg.premultiply(_ho);                                // H * L
-    _tg.premultiply(_mq);                                // Q * H * L
-    _tg.premultiply(_Hq);                                // H^-1 * Q * H * L
-    gunRoot.quaternion.slerp(_tg, 1-Math.exp(-18*dt));
-  } else {
-    aimAmt = damp(aimAmt,0,9,dt);
-    gunRoot.quaternion.slerp(IDQ, 1-Math.exp(-10*dt));
-  }
+  const H=charH, sp=Math.hypot(vel.x,vel.z), spN=Math.min(sp/(5*H),1);
+  aimAmt = damp(aimAmt, aim?1:0, aim?14:9, dt);
+  runAmt = damp(runAmt, (grounded && run_() && spN>0.55)?1:0, 7, dt);
+  walkAmt = damp(walkAmt, grounded?spN:0, 8, dt);
+  if(curA && (curName==='Walk'||curName==='Run')) bobPh = (curA.time/curA.getClip().duration)*Math.PI*2;
+  const am = aimAmt*aimAmt*(3-2*aimAmt), calm = 1-0.7*am;
+  recoil = damp(recoil,0,20,dt);
+  gunYawLag = damp(gunYawLag, Math.max(-0.5,Math.min(0.5,-yawRate*0.03)), 7, dt);
+  const bobY = Math.sin(bobPh*2)*(0.005+0.011*runAmt)*H*walkAmt*calm + Math.sin(tAnim*1.7)*0.0025*H*(1-walkAmt);
+  const bobX = Math.sin(bobPh)*(0.004+0.007*runAmt)*H*walkAmt*calm;
+  const bobP = Math.sin(bobPh*2+1)*(0.03+0.06*runAmt)*walkAmt*calm;
+  const fa = char.rotation.y;
+  _fw.set(Math.sin(fa),0,Math.cos(fa)); _rt.set(-Math.cos(fa),0,Math.sin(fa));
+  // direção do cano: repouso (frente, levemente p/ baixo e p/ o centro) -> mira (direção da câmera)
+  _gx.copy(_fw).addScaledVector(_rt,-0.14+gunYawLag).addScaledVector(UP,-(0.30+0.30*runAmt)+bobP);
+  if(aim) _pl.copy(aim); else _pl.copy(_gx);
+  _gx.normalize().lerp(_pl,am).addScaledVector(UP,recoil*0.07).normalize();
+  _gy.copy(UP).addScaledVector(_gx,-UP.dot(_gx)).normalize();
+  _gz.crossVectors(_gx,_gy);
+  // posição da empunhadura relativa ao peito (Spine2 herda o balanço da animação)
+  chestB.getWorldPosition(_S);
+  const f=(0.105-0.015*runAmt)*(1-am)+0.14*am, r=(0.075-0.005*runAmt)*(1-am)+0.07*am, u=(-0.15+0.02*runAmt)*(1-am)+0.05*am;
+  _P.copy(_S).addScaledVector(_fw,f*H).addScaledVector(_rt,r*H+bobX).addScaledVector(UP,u*H+bobY).addScaledVector(_gx,-recoil*0.02*H);
+  gunRoot.position.copy(_P);
+  gunRoot.quaternion.setFromRotationMatrix(_bm.makeBasis(_gx,_gy,_gz));
+  gunRoot.updateMatrixWorld(true);
+  // mão direita: empunhadura (dedos p/ frente, polegar p/ cima) | mão esquerda: palma p/ cima sob o guarda-mão
+  const palm = A => { A.hd.getWorldPosition(_a); A.mid.getWorldPosition(_b); return 0.5*_a.distanceTo(_b); };
+  const pR = palm(armR), pL = palm(armL);
+  const fR=_a.copy(_gx).addScaledVector(_gy,-0.1).normalize().clone(), lR=_gy.clone();
+  const fL=_a.copy(_gx).addScaledVector(_gy,0.1).normalize().clone(), lL=_gz.clone().negate();
+  const wR=_P.clone().addScaledVector(fR,-pR);
+  const wL=gunRoot.localToWorld(_b.copy(gunGL).sub(gunGR)).clone().addScaledVector(fL,-pL);
+  solveArm(armR,wR,_c.set(0,-1,0).addScaledVector(_rt,0.65).addScaledVector(_fw,-0.25).clone());
+  solveArm(armL,wL,_c.set(0,-1,0).addScaledVector(_rt,-0.55).addScaledVector(_fw,-0.25).clone());
+  orientHand(armR,fR,lR); orientHand(armL,fL,lL);
+  curlHand(armR,1); curlHand(armL,0.75);
+  model.updateMatrixWorld(true);
 }
+const run_ = () => keys.ShiftLeft||keys.ShiftRight;
 
 function shoot(){
   fireCd = 0.1;                                     // cadência de UMP: ~600 rpm
@@ -281,8 +336,10 @@ function shoot(){
   _h.x += (Math.random()-0.5)*0.012; _h.y += (Math.random()-0.5)*0.012; _h.z += (Math.random()-0.5)*0.012;
   _h.normalize();
   gunMuzzle.getWorldPosition(_m);                   // saída visual do projétil: ponta do cano
-  ray.set(camera.position,_h); ray.far=300; ray.near=0;
+  ray.set(camera.position,_h); ray.far=300;
+  ray.near = Math.max(0,_o.set(pos.x,pos.y+0.6*charH,pos.z).sub(camera.position).dot(_h)-0.02);   // ignora o que está entre a câmera e o personagem
   const hit = ray.intersectObjects(meshes,false)[0];
+  ray.near = 0;
   const hp = hit ? hit.point : _o.copy(camera.position).addScaledVector(_h,200);
   fxTracer(_m,hp);
   if(hit){
@@ -292,8 +349,7 @@ function shoot(){
   // flash do disparo + luz rápida na ponta do cano
   fxFlash.position.copy(_m); fxFlash.visible=true; fxFlash.scale.setScalar(0.32*charH);
   fxFlash.rotation.x = Math.random()*3; fxFlash.rotation.z = Math.random()*3; fxFlashT = 0.07;
-  const gl = gunRoot.children.find(c=>c.isPointLight);
-  if(gl){ gl.position.set(0,0,0); gl.intensity = 6; gl.distance = 4*charH; }
+  gunLight.intensity = 6; gunLight.distance = 4*charH; recoil = 1;
   pitch = Math.min(1.55, pitch + 0.004 + (Math.random()-0.5)*0.002);   // recuo leve
 }
 
@@ -442,8 +498,7 @@ function tick(){
     gunAim((firing||aimAmt>0.02) && !fly ? _av : null, dt); }
   // decaimento dos efeitos
   if(fxFlashT>0){ fxFlashT-=dt; const o=Math.max(fxFlashT/0.07,0.001); fxFlash.scale.setScalar(0.32*charH*o); if(fxFlashT<=0) fxFlash.visible=false; }
-  const gl = gunRoot.children.find(c=>c.isPointLight);
-  if(gl && gl.intensity>0){ gl.intensity = Math.max(0, gl.intensity - 80*dt); }
+  if(gunLight.intensity>0){ gunLight.intensity = Math.max(0, gunLight.intensity - 80*dt); }
   for(const l of tracers){ if(l.userData.o>0){ l.userData.o-=dt*12; const o=Math.max(0,l.userData.o); l.scale.set(0.022*charH*o, l.userData.len, 0.022*charH*o); if(l.userData.o<=0) l.visible=false; } }
   for(const s of fxSparks){ if(s.userData.o>0){ s.userData.o-=dt*2.6; s.userData.v.y-=22*charH*dt; s.position.addScaledVector(s.userData.v,dt); s.scale.setScalar(Math.max(0.045*charH*s.userData.o,1e-4)); if(s.userData.o<=0) s.visible=false; } }
 
@@ -451,7 +506,7 @@ function tick(){
   requestAnimationFrame(tick);
 }
 window.__t = {v:4, get pos(){return pos.toArray();},get vy(){return vy;},get grounded(){return grounded;},get facing(){return facing;},get yaw(){return yaw;},get shots(){return shots;},
-  get gun(){return {hand:!!gunHand, loaded:gunLoaded, s:gunLoaded?gunRoot.scale.x:0, p:gunLoaded?gunRoot.position.toArray():null};},
+  get gun(){return {loaded:gunLoaded, s:gunLoaded?gunRoot.scale.x:0, p:gunLoaded?gunRoot.position.toArray():null};},
   get fx(){ return [typeof fxFlash, typeof tracers, tracers?tracers.length:'-', typeof (tracers&&tracers[0])]; },
   get aimErr(){ if(!gunLoaded) return null;
     vis.updateMatrixWorld(true);
