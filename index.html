@@ -188,6 +188,27 @@ function moveHoriz(dx,dz,H){
     const vd = vel.x*nx+vel.z*nz; if(vd<0){ vel.x-=vd*nx; vel.z-=vd*nz; }
   }
 }
+const _dir8 = new THREE.Vector3();
+function unstick(H){                                      // nao deixa o deslize em torno de cantos chegar dentro do volume
+  const R = 0.16*H;
+  for(let it=0; it<2; it++){
+    let best = null;
+    for(let i=0;i<8;i++){
+      const a=i*Math.PI/4;
+      _dir8.set(Math.cos(a),0,Math.sin(a));
+      ray.set(_o.set(pos.x,pos.y+0.62*H,pos.z),_dir8); ray.far = R+0.03;
+      const h = ray.intersectObjects(meshes,false)[0];
+      if(!h || !h.face) continue;
+      _n.copy(h.face.normal).applyMatrix3(_nm.getNormalMatrix(h.object.matrixWorld)).normalize();
+      if(_n.dot(_dir8) > 0) _n.negate();
+      if(Math.abs(_n.y) > 0.7) continue;
+      if(!best || h.distance < best.d) best = {nx:_n.x, nz:_n.z, d:h.distance};
+    }
+    if(!best || best.d >= R*0.95) break;
+    const L = Math.hypot(best.nx,best.nz)||1, push = R-best.d+0.004;
+    pos.x += best.nx/L*push; pos.z += best.nz/L*push;
+  }
+}
 
 const clock = new THREE.Clock();
 function tick(){
@@ -208,6 +229,7 @@ function tick(){
   vel.x = damp(vel.x,want.x,k,dt); vel.z = damp(vel.z,want.z,k,dt);
 
   moveHoriz(vel.x*dt, vel.z*dt, H);
+  unstick(H);
 
   // vertical
   jumpBuf = Math.max(0,jumpBuf-dt); coyote = Math.max(0,coyote-dt);
@@ -215,7 +237,10 @@ function tick(){
   if(grounded){
     vy = 0;
     if(gy!==null && pos.y-gy<=stepDown){
-      stepOff += pos.y-gy; pos.y = gy;                   // acompanha degraus e rampas
+      stepOff += pos.y-gy;                               // offset p/ bob visual (mesma semantica de antes)
+      const rise = gy - pos.y;                           // +: degrau acima, -: abaixo
+      if(rise > 0.001) pos.y = Math.min(gy, pos.y + 0.5*stepUp);  // sobe degrau em ~2 quadros (antes: teleporte 1 quadro)
+      else pos.y = damp(pos.y, gy, 18, dt);              // desce degrau/rampa com follow suave (antes: fica no ar e cai)
     } else { grounded=false; coyote=0.1; }
   }
   if(jumpBuf>0 && (grounded||coyote>0)){
