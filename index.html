@@ -53,7 +53,7 @@ scene.add(char); char.add(vis); vis.add(model);
 model.updateMatrixWorld(true);
 const cb = new THREE.Box3().setFromObject(model);
 const cs = cb.getSize(new THREE.Vector3());
-let charH = 1.0;                           // altura do personagem no mapa (teclas - e = ajustam)
+let charH = 0.4;                           // altura do personagem no mapa (teclas - e = ajustam)
 function applyScale(){
   const k = charH / cs.y;
   model.scale.setScalar(k);
@@ -65,6 +65,7 @@ applyScale();
 // ---------- colisão ----------
 const ray = new THREE.Raycaster();
 const DOWN = new THREE.Vector3(0,-1,0);
+const UP = new THREE.Vector3(0,1,0);
 const meshes = []; map.traverse(o=>{ if(o.isMesh) meshes.push(o); });
 const _o = new THREE.Vector3(), _n = new THREE.Vector3(), _nm = new THREE.Matrix3();
 function groundY(x,z,fromY){
@@ -163,7 +164,7 @@ function tick(){
 
   // vertical
   jumpBuf = Math.max(0,jumpBuf-dt); coyote = Math.max(0,coyote-dt);
-  const gy = groundY(pos.x,pos.z,pos.y+stepUp);
+  const gy = grounded ? groundY(pos.x,pos.z,pos.y+2*stepUp) : groundY(pos.x,pos.z,pos.y+stepUp);
   if(grounded){
     vy = 0;
     if(gy!==null && pos.y-gy<=stepDown){
@@ -174,6 +175,10 @@ function tick(){
     vy = JUMP; grounded=false; coyote=0; jumpBuf=0; sq=0.22; sqV=0;
   }
   if(!grounded){
+    if(vy>0){                                             // cabeça não atravessa tetos/pontas baixos
+      ray.set(_o.set(pos.x,pos.y,pos.z),UP); ray.far = 1.05*H;
+      if(ray.intersectObjects(meshes,false)[0]) vy = 0;
+    }
     vy -= G*dt; pos.y += vy*dt;
     if(gy!==null && pos.y<=gy && vy<=0){
       const impact = -vy; pos.y=gy; vy=0; grounded=true;
