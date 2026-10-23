@@ -13,8 +13,8 @@
 </head>
 <body>
 <div id="load">Carregando mapa...</div>
-<div id="info">WASD: andar · Shift: correr · Espaço: pular<br>Arrastar mouse: girar câmera · Scroll: zoom · - / = : tamanho (<span id="sz"></span>)<br>
-<span style="opacity:.7">Mapa: 3D KING FF · Personagem: Soldier (Mixamo, via three.js examples)</span></div>
+<div id="info">WASD: andar · Shift: correr · Espaço: pular<br>Segurar clique: atirar (UMP) · Arrastar mouse: girar câmera · Scroll: zoom<br>- / = : tamanho (<span id="sz"></span>) · Q: câmera livre · P: teleportar<br>
+<span style="opacity:.7">Mapa: 3D KING FF · Personagem: Soldier (Mixamo) · UMP: Quaternius (CC0)</span></div>
 <script type="importmap">
 {"imports":{"three":"./lib/three/three.module.js"}}
 </script>
@@ -36,9 +36,10 @@ const sun = new THREE.DirectionalLight(0xffffff,1.2); sun.position.set(30,60,20)
 
 const loader = new GLTFLoader();
 const load = u => new Promise((res,rej)=>loader.load(u,res,undefined,rej));
-const [mapGltf, charGltf] = await Promise.all([
+const [mapGltf, charGltf, umpGltf] = await Promise.all([
   load('./free_fire_old_training_ground_3d_model/free_fire_old_training_ground_3d_model.gltf'),
-  load('./personagem/soldier.glb')
+  load('./personagem/soldier.glb'),
+  load('./armas/ump.glb')                       // UMP (SubmachineGun 2, Quaternius/Poly Pizza, CC0)
 ]);
 
 const map = mapGltf.scene;
@@ -56,11 +57,13 @@ const cb = new THREE.Box3().setFromObject(model);
 const cs = cb.getSize(new THREE.Vector3());
 let charH = 0.4;                           // altura do personagem no mapa (teclas - e = ajustam)
 let modelScale = 1;                        // escala do modelo esquelético (para sincronia de passos)
+let gunLoaded = false;                     // arma (UMP) presa ao esqueleto e pronta
 function applyScale(){
   const k = charH / cs.y;
   modelScale = k;
   model.scale.setScalar(k);
   model.position.set(-(cb.min.x+cb.max.x)/2*k, -cb.min.y*k, -(cb.min.z+cb.max.z)/2*k);
+  gunFit();                                     // arma acompanha a altura do personagem
   const el = document.getElementById('sz'); if(el) el.textContent = charH.toFixed(2);
 }
 applyScale();
@@ -87,7 +90,7 @@ model.traverse(o=>{
   });
 });
 {
-  const head = model.getObjectByName('mixamorig:Head');
+  const head = model.getObjectByName('mixamorig:Head') || model.getObjectByName('mixamorigHead');
   if(head){
     const earMat = new THREE.MeshStandardMaterial({color:0x151b26, roughness:0.5, emissive:0x0a1e4d, emissiveIntensity:0.6});
     const earGeo = new THREE.CylinderGeometry(3.2,4.6,34,10);   // frame local do osso em cm
@@ -99,6 +102,64 @@ model.traverse(o=>{
     }
   }
 }
+
+// ---------- UMP: presa ao osso da mão direita (mesmo padrão das orelhas) ----------
+const ump = umpGltf.scene;
+const gunBox = new THREE.Box3().setFromObject(ump);
+const gunHand = model.getObjectByName('mixamorig:RightHand') || model.getObjectByName('mixamorigRightHand');
+const gunRoot = new THREE.Group();              // grupo de montagem na mão
+const gunMuzzle = new THREE.Object3D();         // ponta do cano (+X = mira)
+gunMuzzle.position.set(gunBox.max.x+0.03, (gunBox.min.y+gunBox.max.y)/2, (gunBox.min.z+gunBox.max.z)/2);
+ump.add(gunMuzzle);
+// rotação: cano (+X da arma) -> dedos (+Y do osso); "para cima" da arma -> Z do osso
+ump.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(
+  new THREE.Vector3(0,1,0), new THREE.Vector3(0,0,1), new THREE.Vector3(1,0,0)));
+const gunGrip = new THREE.Object3D();           // zona da empunhadura (no espaço local da UMP)
+gunGrip.position.set(0.55,-0.5,0);
+ump.add(gunGrip);
+gunRoot.add(ump);
+const gunLight = new THREE.PointLight(0xffd9a0,0,1); gunRoot.add(gunLight);
+const _bw = new THREE.Box3(), _gs = new THREE.Vector3(), _gw = new THREE.Vector3(), _hi = new THREE.Matrix4();
+function gunFit(){                              // escala/ancoragem numéricas (independente do frame do osso)
+  if(!gunLoaded) return;
+  gunRoot.position.set(0,0,0); gunRoot.scale.setScalar(1);
+  vis.updateMatrixWorld(true);                  // pose real do esqueleto
+  _bw.setFromObject(gunRoot); _bw.getSize(_gs);
+  gunRoot.scale.setScalar(0.55*charH/_gs.x);    // comprimento no mundo = 0,55*charH
+  vis.updateMatrixWorld(true);
+  gunGrip.getWorldPosition(_gw);                // leva o grip até a origem do osso da mão
+  _hi.copy(gunHand.matrixWorld).invert();
+  gunRoot.position.copy(_gw).applyMatrix4(_hi).negate();
+}
+if(gunHand){ gunHand.add(gunRoot); gunLoaded = true; gunFit(); }
+
+// ---------- efeitos de tiro (sem transparência: flash/tracers/faíscas em mescla aditiva opaca, escala de anima) ----------
+const fxFlash = new THREE.Mesh(new THREE.OctahedronGeometry(1),new THREE.MeshBasicMaterial({color:0xffd070,blending:THREE.AdditiveBlending,depthWrite:false}));
+fxFlash.visible=false; scene.add(fxFlash);
+const fxSparks = [];                                            // faíscas do impacto
+for(let i=0;i<16;i++){
+  const s = new THREE.Mesh(new THREE.TetrahedronGeometry(1),new THREE.MeshBasicMaterial({color:0xffa030,blending:THREE.AdditiveBlending,depthWrite:false}));
+  s.visible=false; s.userData={v:new THREE.Vector3(),o:0}; scene.add(s); fxSparks.push(s);
+}
+let fxFlashT = 0;
+const _m = new THREE.Vector3(), _h = new THREE.Vector3(), _dv = new THREE.Vector3(), _upV = new THREE.Vector3(0,1,0);
+const tracerGeo = new THREE.CylinderGeometry(1,1,1,5,1,true); tracerGeo.translate(0,0.5,0);   // base em Y=0, sobe +Y
+const tracers = [];                                             // tracers como "tubo" fino
+for(let i=0;i<20;i++){
+  const t = new THREE.Mesh(tracerGeo,new THREE.MeshBasicMaterial({color:0xffd9a0,blending:THREE.AdditiveBlending,depthWrite:false}));
+  t.visible=false; t.frustumCulled=false; t.userData={o:0,len:1}; scene.add(t); tracers.push(t);
+}
+function fxTracer(a,b){ const l = tracers.find(x=>x.userData.o<=0) || tracers[0];
+  _dv.subVectors(b,a); const len=_dv.length();
+  l.userData.len = len>1e-4?len:1e-4;
+  l.quaternion.setFromUnitVectors(_upV, _dv.normalize());
+  l.position.copy(a);
+  l.scale.set(0.04*charH, l.userData.len, 0.04*charH);
+  l.userData.o=1; l.visible=true;
+}
+function fxImpact(p){ for(let i=0;i<4;i++){ const s = fxSparks.find(x=>x.userData.o<=0); if(!s) return;
+  s.position.copy(p); s.userData.v.set(Math.random()-0.5,Math.random()*0.8,Math.random()-0.5).multiplyScalar(2.2*charH);
+  s.userData.o=1; s.visible=true; } }
 
 // ---------- colisão ----------
 const ray = new THREE.Raycaster();
@@ -156,14 +217,25 @@ addEventListener('keydown',e=>{
   }
   if(e.code==='Minus'||e.code==='NumpadSubtract'){ charH=Math.max(0.3,charH/1.1); applyScale(); }
   if(e.code==='Equal'||e.code==='NumpadAdd'){ charH=Math.min(3,charH*1.1); applyScale(); }
+  if(e.code==='KeyP' && !e.repeat && !/^(INPUT|TEXTAREA)$/.test(e.target?.tagName||'')){
+    if(fly){
+      const px=flyPos.x+fF.x*1.2, pz=flyPos.z+fF.z*1.2;
+      const gy=groundY(px,pz,flyPos.y+2);
+      pos.set(px,(gy!==null?gy:flyPos.y-2)+0.02,pz);        // teleporta o personagem pra area que a camera livre esta vendo
+    } else {
+      pos.copy(spawn);                                     // fora do modo livre: respawn no spawn
+    }
+    vel.set(0,0,0); vy=0; grounded=true; stepOff=0; sq=0; camT.copy(pos);
+  }
 });
 addEventListener('keyup',e=>keys[e.code]=false);
 let yaw=0, pitch=0.35, dist=4.5, drag=false;
 let fly=false;                                    // modo Fly Camera (tecla Q alterna)
 const flyPos=new THREE.Vector3();                 // posição da câmera no modo livre
 const fF=new THREE.Vector3(), rF=new THREE.Vector3(); // frente/direita da câmera livre
-renderer.domElement.addEventListener('pointerdown',e=>{drag=true;renderer.domElement.setPointerCapture(e.pointerId);});
-renderer.domElement.addEventListener('pointerup',()=>drag=false);
+renderer.domElement.addEventListener('pointerdown',e=>{drag=true; if(e.button===0) firing=true; renderer.domElement.setPointerCapture(e.pointerId);});
+renderer.domElement.addEventListener('pointerup',()=>{drag=false; firing=false;});
+addEventListener('blur',()=>{drag=false; firing=false;});
 renderer.domElement.addEventListener('pointermove',e=>{ if(!drag)return;
   yaw -= e.movementX*0.005;
   const lim = fly ? 1.55 : 1.3, lo = fly ? -1.55 : -0.2;
@@ -173,20 +245,66 @@ addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updat
 
 const damp = (a,b,l,dt)=>a+(b-a)*(1-Math.exp(-l*dt));
 const fwd=new THREE.Vector3(), right=new THREE.Vector3(), want=new THREE.Vector3(), dir=new THREE.Vector3();
+let firing=false, fireCd=0, shots=0;                     // tiro da UMP (segurar botão esquerdo)
+const _mq=new THREE.Quaternion(), _ho=new THREE.Quaternion(), _Hq=new THREE.Quaternion(), _tg=new THREE.Quaternion();
+const _ms=new THREE.Vector3(), _av=new THREE.Vector3();
+const IDQ = new THREE.Quaternion();
+let aimAmt = 0;                                          // mistura da pose de mira (0=repouso,1=mira)
+
+function gunAim(aim,dt){                                 // pose de mira: cano -> direção da câmera
+  if(!gunLoaded) return;
+  vis.updateMatrixWorld(true);
+  if(aim){
+    aimAmt = damp(aimAmt,1,14,dt);
+    gunMuzzle.getWorldQuaternion(_mq);                   // onde o cano aponta no mundo agora
+    _ms.set(1,0,0).applyQuaternion(_mq).normalize();
+    _mq.setFromUnitVectors(_ms, aim);                    // desvio mundo: cano -> mira
+    gunHand.getWorldQuaternion(_ho);                     // converte p/ espaço do osso: H^-1 * Q * H
+    _Hq.copy(_ho).invert();
+    _tg.copy(gunRoot.quaternion);                        // L
+    _tg.premultiply(_ho);                                // H * L
+    _tg.premultiply(_mq);                                // Q * H * L
+    _tg.premultiply(_Hq);                                // H^-1 * Q * H * L
+    gunRoot.quaternion.slerp(_tg, 1-Math.exp(-18*dt));
+  } else {
+    aimAmt = damp(aimAmt,0,9,dt);
+    gunRoot.quaternion.slerp(IDQ, 1-Math.exp(-10*dt));
+  }
+}
+
+function shoot(){
+  fireCd = 0.1;                                     // cadência de UMP: ~600 rpm
+  shots++;
+  vis.updateMatrixWorld(true);                      // garante frame do esqueleto/arma p/ muzzle
+  const cP=Math.cos(pitch), sP=Math.sin(pitch), sY=Math.sin(yaw), cY=Math.cos(yaw);
+  _h.set(-sY*cP,-sP,-cY*cP).normalize();            // direção da mira (mesma da câmera)
+  _h.x += (Math.random()-0.5)*0.012; _h.y += (Math.random()-0.5)*0.012; _h.z += (Math.random()-0.5)*0.012;
+  _h.normalize();
+  gunMuzzle.getWorldPosition(_m);                   // saída visual do projétil: ponta do cano
+  ray.set(camera.position,_h); ray.far=300; ray.near=0;
+  const hit = ray.intersectObjects(meshes,false)[0];
+  const hp = hit ? hit.point : _o.copy(camera.position).addScaledVector(_h,200);
+  fxTracer(_m,hp);
+  if(hit){
+    _n.copy(hit.face.normal).applyMatrix3(_nm.getNormalMatrix(hit.object.matrixWorld)).normalize();
+    fxImpact(hit.point);                            // faíscas no impacto
+  }
+  // flash do disparo + luz rápida na ponta do cano
+  fxFlash.position.copy(_m); fxFlash.visible=true; fxFlash.scale.setScalar(0.32*charH);
+  fxFlash.rotation.x = Math.random()*3; fxFlash.rotation.z = Math.random()*3; fxFlashT = 0.07;
+  const gl = gunRoot.children.find(c=>c.isPointLight);
+  if(gl){ gl.position.set(0,0,0); gl.intensity = 6; gl.distance = 4*charH; }
+  pitch = Math.min(1.55, pitch + 0.004 + (Math.random()-0.5)*0.002);   // recuo leve
+}
 
 function moveHoriz(dx,dz,H){
   const R = 0.16*H;
-  for(let it=0; it<2; it++){
-    const len = Math.hypot(dx,dz); if(len<1e-6) return;
-    dir.set(dx/len,0,dz/len);
-    const hit = wallHit(pos.x,pos.y,pos.z,dir,len+R,H);
-    if(!hit){ pos.x+=dx; pos.z+=dz; return; }
-    const ok = Math.max(0,hit.d-R); pos.x+=dir.x*ok; pos.z+=dir.z*ok;
-    const nl = Math.hypot(hit.nx,hit.nz)||1, nx=hit.nx/nl, nz=hit.nz/nl;
-    const rx=dir.x*(len-ok), rz=dir.z*(len-ok), dp=rx*nx+rz*nz;
-    dx = rx-dp*nx; dz = rz-dp*nz;                         // desliza na parede
-    const vd = vel.x*nx+vel.z*nz; if(vd<0){ vel.x-=vd*nx; vel.z-=vd*nz; }
-  }
+  const len = Math.hypot(dx,dz); if(len<1e-6) return;
+  dir.set(dx/len,0,dz/len);
+  const hit = wallHit(pos.x,pos.y,pos.z,dir,len+R,H);
+  if(!hit){ pos.x+=dx; pos.z+=dz; return; }
+  const ok = Math.max(0,hit.d-R); pos.x+=dir.x*ok; pos.z+=dir.z*ok;
+  // bloqueia na direcao pedida: sem deslize lateral, sem girar de lado
 }
 const _dir8 = new THREE.Vector3();
 function unstick(H){                                      // nao deixa o deslize em torno de cantos chegar dentro do volume
@@ -263,8 +381,13 @@ function tick(){
 
   // ---------- animação ----------
   const sp = Math.hypot(vel.x,vel.z), spF = Math.min(sp/(5*H),1);
-  if(sp>0.25*H){
-    const target=Math.atan2(vel.x,vel.z);
+  const aiming = firing && !fly;
+  if(aiming){                                       // ao atirar, o corpo mira a câmera
+    const cP=Math.cos(pitch), sY=Math.sin(yaw), cY=Math.cos(yaw);
+    var aimTarget = Math.atan2(-sY*cP, -cY*cP);
+  }
+  if(aiming || sp>0.25*H){
+    const target= aiming ? aimTarget : Math.atan2(vel.x,vel.z);
     const d=((target-facing+Math.PI)%(2*Math.PI)+2*Math.PI)%(2*Math.PI)-Math.PI;
     facing += d*(1-Math.exp(-14*dt)); yawRate = damp(yawRate,d*14,10,dt);
   } else yawRate = damp(yawRate,0,10,dt);
@@ -310,10 +433,32 @@ function tick(){
     camera.position.set(camT.x+Math.sin(yaw)*Math.cos(pitch)*D, camT.y+0.6*H+Math.sin(pitch)*D, camT.z+Math.cos(yaw)*Math.cos(pitch)*D);
     camera.lookAt(camT.x,camT.y+0.55*H,camT.z);
   }
+
+  // ---------- tiro da UMP ----------
+  fireCd -= dt;
+  if(firing && !fly && fireCd<=0) shoot();
+  { const cP=Math.cos(pitch), sP=Math.sin(pitch), sY=Math.sin(yaw), cY=Math.cos(yaw);
+    _av.set(-sY*cP,-sP,-cY*cP).normalize();
+    gunAim((firing||aimAmt>0.02) && !fly ? _av : null, dt); }
+  // decaimento dos efeitos
+  if(fxFlashT>0){ fxFlashT-=dt; const o=Math.max(fxFlashT/0.07,0.001); fxFlash.scale.setScalar(0.32*charH*o); if(fxFlashT<=0) fxFlash.visible=false; }
+  const gl = gunRoot.children.find(c=>c.isPointLight);
+  if(gl && gl.intensity>0){ gl.intensity = Math.max(0, gl.intensity - 80*dt); }
+  for(const l of tracers){ if(l.userData.o>0){ l.userData.o-=dt*12; const o=Math.max(0,l.userData.o); l.scale.set(0.022*charH*o, l.userData.len, 0.022*charH*o); if(l.userData.o<=0) l.visible=false; } }
+  for(const s of fxSparks){ if(s.userData.o>0){ s.userData.o-=dt*2.6; s.userData.v.y-=22*charH*dt; s.position.addScaledVector(s.userData.v,dt); s.scale.setScalar(Math.max(0.045*charH*s.userData.o,1e-4)); if(s.userData.o<=0) s.visible=false; } }
+
   renderer.render(scene,camera);
   requestAnimationFrame(tick);
 }
-window.__t = {get pos(){return pos.toArray();},get vy(){return vy;},get grounded(){return grounded;},get facing(){return facing;},get yaw(){return yaw;}};
+window.__t = {v:4, get pos(){return pos.toArray();},get vy(){return vy;},get grounded(){return grounded;},get facing(){return facing;},get yaw(){return yaw;},get shots(){return shots;},
+  get gun(){return {hand:!!gunHand, loaded:gunLoaded, s:gunLoaded?gunRoot.scale.x:0, p:gunLoaded?gunRoot.position.toArray():null};},
+  get fx(){ return [typeof fxFlash, typeof tracers, tracers?tracers.length:'-', typeof (tracers&&tracers[0])]; },
+  get aimErr(){ if(!gunLoaded) return null;
+    vis.updateMatrixWorld(true);
+    gunMuzzle.getWorldQuaternion(_mq); _ms.set(1,0,0).applyQuaternion(_mq).normalize();
+    const cP=Math.cos(pitch), sP=Math.sin(pitch), sY=Math.sin(yaw), cY=Math.cos(yaw);
+    _av.set(-sY*cP,-sP,-cY*cP).normalize();
+    return +(_ms.dot(_av)).toFixed(3); }};
 tick();
 </script>
 </body>
