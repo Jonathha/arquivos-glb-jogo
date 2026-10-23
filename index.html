@@ -49,6 +49,7 @@ const mapBox = new THREE.Box3().setFromObject(map);
 const char = new THREE.Group();            // posição física + direção
 const vis = new THREE.Group();             // animação procedural (inclinação, squash)
 const model = charGltf.scene;
+model.rotation.y = Math.PI;               // o Mixamo sai com frente em -Z; o jogo assume frente +Z
 scene.add(char); char.add(vis); vis.add(model);
 model.updateMatrixWorld(true);
 const cb = new THREE.Box3().setFromObject(model);
@@ -76,6 +77,28 @@ function fadeClip(next,name,t=0.22){
   next.play();
 }
 if(clips.Idle) fadeClip(clips.Idle,'Idle');
+
+// ---------- identidade visual do personagem anterior (traje escuro + orelhas) ----------
+model.traverse(o=>{
+  if(o.isMesh) [].concat(o.material).forEach(m=>{
+    m.color.setHex(0x151b26);                 // traje escuro do personagem original
+    if(m.emissive) m.emissive.setHex(0x050b18);
+    m.roughness = Math.min(m.roughness ?? 1, 0.55);
+  });
+});
+{
+  const head = model.getObjectByName('mixamorig:Head');
+  if(head){
+    const earMat = new THREE.MeshStandardMaterial({color:0x151b26, roughness:0.5, emissive:0x0a1e4d, emissiveIntensity:0.6});
+    const earGeo = new THREE.CylinderGeometry(3.2,4.6,34,10);   // frame local do osso em cm
+    for(const s of [-1,1]){
+      const ear = new THREE.Mesh(earGeo, earMat);
+      ear.position.set(7.5*s, 15, 1);
+      ear.rotation.z = -0.16*s; ear.rotation.x = -0.1;
+      head.add(ear);                            // acompanha o esqueleto (articulado)
+    }
+  }
+}
 
 // ---------- colisão ----------
 const ray = new THREE.Raycaster();
@@ -199,9 +222,11 @@ function tick(){
     vy = JUMP; grounded=false; coyote=0; jumpBuf=0; sq=0.22; sqV=0;
   }
   if(!grounded){
-    if(vy>0){                                             // cabeça não atravessa tetos/pontas baixos
-      ray.set(_o.set(pos.x,pos.y,pos.z),UP); ray.far = 1.05*H;
+    if(vy>0){                                             // teto/proa baixa: cabeça não atravessa
+      ray.set(_o.set(pos.x,pos.y,pos.z),UP);
+      ray.far = 1.85*H; ray.near = 0.1*H;                 // near descarta o piso em distancia~0
       if(ray.intersectObjects(meshes,false)[0]) vy = 0;
+      ray.near = 0;
     }
     vy -= G*dt; pos.y += vy*dt;
     if(gy!==null && pos.y<=gy && vy<=0){
