@@ -362,6 +362,7 @@ function unstick(H){                                      // nao deixa o deslize
   }
 }
 
+let climb = 0;                                // 0..1: subindo degrau (reduz a velocidade ao correr)
 const clock = new THREE.Clock();
 function tick(){
   const dt = Math.min(clock.getDelta(),0.05); tAnim += dt;
@@ -376,13 +377,14 @@ function tick(){
   if(keys.KeyD)want.add(right); if(keys.KeyA)want.sub(right);
   if(fly) want.set(0,0,0);                             // Fly Camera: personagem parado
   const hasIn = want.lengthSq()>0;
-  if(hasIn) want.normalize().multiplyScalar((run?5:2.4)*H);
+  if(hasIn) want.normalize().multiplyScalar((run?5*(1-0.45*climb):2.4)*H);
   const k = grounded ? (hasIn?13:11) : (hasIn?4:0.8);
   vel.x = damp(vel.x,want.x,k,dt); vel.z = damp(vel.z,want.z,k,dt);
 
   moveHoriz(vel.x*dt, vel.z*dt, H);
   unstick(H);
 
+  climb = damp(climb,0,3,dt);
   // vertical
   jumpBuf = Math.max(0,jumpBuf-dt); coyote = Math.max(0,coyote-dt);
   const gy = grounded ? groundY(pos.x,pos.z,pos.y+2*stepUp) : groundY(pos.x,pos.z,pos.y+stepUp);
@@ -391,7 +393,7 @@ function tick(){
     if(gy!==null && pos.y-gy<=stepDown){
       stepOff += pos.y-gy;                               // offset p/ bob visual (mesma semantica de antes)
       const rise = gy - pos.y;                           // +: degrau acima, -: abaixo
-      if(rise > 0.001) pos.y = Math.min(gy, pos.y + 0.5*stepUp);  // sobe degrau em ~2 quadros (antes: teleporte 1 quadro)
+      if(rise > 0.001){ climb = 1; pos.y = Math.min(gy, pos.y + 0.5*stepUp); }  // sobe degrau em ~2 quadros (antes: teleporte 1 quadro)
       else pos.y = damp(pos.y, gy, 18, dt);              // desce degrau/rampa com follow suave (antes: fica no ar e cai)
     } else { grounded=false; coyote=0.1; }
   }
@@ -425,7 +427,7 @@ function tick(){
     const d=((target-facing+Math.PI)%(2*Math.PI)+2*Math.PI)%(2*Math.PI)-Math.PI;
     facing += d*(1-Math.exp(-14*dt)); yawRate = damp(yawRate,d*14,10,dt);
   } else yawRate = damp(yawRate,0,10,dt);
-  lean = damp(lean, grounded ? spF*0.24 : Math.max(-0.25,Math.min(0.25,-vy/(14*H)))*0.8 + spF*0.12, 9, dt);
+  lean = damp(lean, grounded ? spF*0.12 : Math.max(-0.25,Math.min(0.25,-vy/(14*H)))*0.8 + spF*0.12, 9, dt);
   roll = damp(roll, -Math.max(-1,Math.min(1,yawRate*0.12))*0.3*spF, 9, dt);
   sqV += (-220*sq - 17*sqV)*dt; sq += sqV*dt;
   stepOff = damp(stepOff,0,16,dt);
