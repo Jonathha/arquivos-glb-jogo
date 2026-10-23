@@ -14,7 +14,7 @@
 <body>
 <div id="load">Carregando mapa...</div>
 <div id="info">WASD: andar · Shift: correr · Espaço: pular<br>Segurar clique: atirar (UMP) · Arrastar mouse: girar câmera · Scroll: zoom<br>- / = : tamanho (<span id="sz"></span>) · Q: câmera livre · P: teleportar<br>
-<span style="opacity:.7">Mapa: 3D KING FF · Personagem: Soldier (Mixamo) · UMP: Quaternius (CC0)</span></div>
+<span style="opacity:.7">Mapa: 3D KING FF · Personagem: Rouk (Mixamo rig) · UMP: Quaternius (CC0)</span></div>
 <script type="importmap">
 {"imports":{"three":"./lib/three/three.module.js"}}
 </script>
@@ -38,7 +38,7 @@ const loader = new GLTFLoader();
 const load = u => new Promise((res,rej)=>loader.load(u,res,undefined,rej));
 const [mapGltf, charGltf, umpGltf] = await Promise.all([
   load('./free_fire_old_training_ground_3d_model/free_fire_old_training_ground_3d_model.gltf'),
-  load('./personagem/soldier.glb'),
+  load('./personagem/rouk.glb'),
   load('./armas/ump.glb')                       // UMP (SubmachineGun 2, Quaternius/Poly Pizza, CC0)
 ]);
 
@@ -50,7 +50,7 @@ const mapBox = new THREE.Box3().setFromObject(map);
 const char = new THREE.Group();            // posição física + direção
 const vis = new THREE.Group();             // animação procedural (inclinação, squash)
 const model = charGltf.scene;
-model.rotation.y = Math.PI;               // o Mixamo sai com frente em -Z; o jogo assume frente +Z
+model.rotation.y = 0;                     // o Rouk (rig Mixamo) já sai com frente em +Z, que é o que o jogo assume
 scene.add(char); char.add(vis); vis.add(model);
 model.updateMatrixWorld(true);
 const cb = new THREE.Box3().setFromObject(model);
@@ -80,28 +80,6 @@ function fadeClip(next,name,t=0.22){
   next.play();
 }
 if(clips.Idle) fadeClip(clips.Idle,'Idle');
-
-// ---------- identidade visual do personagem anterior (traje escuro + orelhas) ----------
-model.traverse(o=>{
-  if(o.isMesh) [].concat(o.material).forEach(m=>{
-    m.color.setHex(0x151b26);                 // traje escuro do personagem original
-    if(m.emissive) m.emissive.setHex(0x050b18);
-    m.roughness = Math.min(m.roughness ?? 1, 0.55);
-  });
-});
-{
-  const head = model.getObjectByName('mixamorig:Head') || model.getObjectByName('mixamorigHead');
-  if(head){
-    const earMat = new THREE.MeshStandardMaterial({color:0x151b26, roughness:0.5, emissive:0x0a1e4d, emissiveIntensity:0.6});
-    const earGeo = new THREE.CylinderGeometry(3.2,4.6,34,10);   // frame local do osso em cm
-    for(const s of [-1,1]){
-      const ear = new THREE.Mesh(earGeo, earMat);
-      ear.position.set(7.5*s, 15, 1);
-      ear.rotation.z = -0.16*s; ear.rotation.x = -0.1;
-      head.add(ear);                            // acompanha o esqueleto (articulado)
-    }
-  }
-}
 
 // ---------- UMP: segurada com as duas mãos (IK nos braços; arma ancorada no peito) ----------
 const GUN_LEN = 0.45;                           // comprimento da arma no mundo = GUN_LEN*charH
@@ -456,7 +434,7 @@ function tick(){
   if(curA){
     mixer.timeScale = grounded?1:0;
     if(grounded){
-      const stride = curName==='Walk'?1.6 : curName==='Run'?5.0 : 0;  // velocidade nativa dos clips (m/s)
+      const stride = curName==='Walk'?1.6*0.01833 : curName==='Run'?5.0*0.01833 : 0;  // velocidade nativa dos clips (unid. do modelo/s; 0.01833 = escala do Rouk vs soldier)
       if(stride) curA.timeScale = (sp/modelScale)/stride;
       const walkMin = curName==='Idle' ? 0.35*H : 0.18*H;            // histerese
       const target = sp>walkMin ? (run?'Run':'Walk') : 'Idle';
